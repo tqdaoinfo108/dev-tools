@@ -1,8 +1,8 @@
 module.exports = {
   apps: [{
     name: 'dev-tools',
-    script: 'npm',
-    args: 'start',
+    script: 'node',
+    args: 'node_modules/next/dist/bin/next start',
     cwd: process.cwd(),
     instances: 1,
     autorestart: true,

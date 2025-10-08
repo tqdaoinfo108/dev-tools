@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/Card'
 import { StringTools } from '@/components/tools/StringTools'
 import { PageJsonMerger } from '@/components/tools/JsonMerge'
 import { AndroidTools } from '@/components/tools/AndroidTools'
+import { AndroidLogcatFilter } from '@/components/tools/AndroidLogcatFilter'
 import { notFound } from 'next/navigation'
 import OpenSSLPage from '@/components/tools/OpenSSLTools'
 import JsonFormatter from '@/components/tools/JsonFormatter'
@@ -13,6 +14,7 @@ const TOOL_COMPONENTS = {
   'json-formatter': JsonFormatter,
   'json-merger': PageJsonMerger,
   'android-tools': AndroidTools,
+  'android-logcat': AndroidLogcatFilter,
   'open-ssl-tools' : OpenSSLPage
 } as const
 
