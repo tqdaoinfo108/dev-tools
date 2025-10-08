@@ -103,25 +103,6 @@ dev-tools/
 - **UI Components**: Radix UI primitives
 - **Package Manager**: pnpm
 
-## 🐳 Docker Deployment
-
-### Build Docker image
-
-```bash
-# Sử dụng script tự động (Windows)
-.\docker-build.ps1
-
-# Hoặc build thủ công
-docker build -t dev-tools:latest .
-```
-
-### Chạy với Docker Compose
-
-```bash
-docker-compose up -d
-```
-
-Xem [DOCKER_GUIDE.md](./DOCKER_GUIDE.md) để biết thêm chi tiết.
 
 ## 🚀 Deployment
 
@@ -202,10 +183,6 @@ pnpm build        # Build cho production
 pnpm start        # Chạy production server
 pnpm lint         # Chạy ESLint
 
-# Docker
-.\docker-build.ps1    # Build Docker image (Windows)
-./docker-build.sh     # Build Docker image (Linux/macOS)
-docker-compose up -d  # Chạy với Docker Compose
 
 # Deployment
 .\deploy.ps1      # Deploy với PM2 (Windows)

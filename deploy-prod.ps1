@@ -13,7 +13,6 @@ param(
     [switch]$SkipTests = $false,
     [switch]$SkipBackup = $false,
     [switch]$Force = $false,
-    [switch]$Docker = $false,
     [switch]$Rollback = $false,
     [string]$BackupName = ""
 )
@@ -109,16 +108,6 @@ function Test-Prerequisites {
         }
     }
     
-    # Check if Docker is available (if Docker deployment is requested)
-    if ($Docker) {
-        try {
-            docker info | Out-Null
-            Write-Status "Docker is available"
-        } catch {
-            Write-Error "Docker is not running or not installed. Please start Docker Desktop."
-            exit 1
-        }
-    }
     
     Write-Success "All prerequisites are satisfied"
 }
@@ -325,33 +314,6 @@ function Deploy-PM2 {
     Write-Success "PM2 deployment completed"
 }
 
-# Function to deploy with Docker
-function Deploy-Docker {
-    Write-Header "Deploying with Docker"
-    
-    $imageName = "$AppName-prod"
-    $containerName = "$AppName-prod-container"
-    
-    Write-Status "Building Docker image..."
-    docker build -t $imageName .
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Docker build failed"
-        exit 1
-    }
-    
-    Write-Status "Stopping existing container..."
-    docker stop $containerName 2>$null
-    docker rm $containerName 2>$null
-    
-    Write-Status "Starting new container..."
-    docker run -d -p $Port`:3000 --name $containerName --restart unless-stopped $imageName
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Failed to start Docker container"
-        exit 1
-    }
-    
-    Write-Success "Docker deployment completed"
-}
 
 # Function to perform health check
 function Test-HealthCheck {
@@ -389,24 +351,13 @@ function Test-HealthCheck {
 function Show-Status {
     Write-Header "Deployment Status"
     
-    if ($Docker) {
-        Write-Status "Docker containers:"
-        docker ps --filter "name=$AppName" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-    } else {
-        Write-Status "PM2 processes:"
-        pm2 status
-    }
+    Write-Status "PM2 processes:"
+    pm2 status
     
     Write-Status "`nUseful commands:"
-    if ($Docker) {
-        Write-Host "  View logs: docker logs $AppName-prod-container" -ForegroundColor White
-        Write-Host "  Stop container: docker stop $AppName-prod-container" -ForegroundColor White
-        Write-Host "  Restart container: docker restart $AppName-prod-container" -ForegroundColor White
-    } else {
-        Write-Host "  View logs: pm2 logs $AppName" -ForegroundColor White
-        Write-Host "  Monitor: pm2 monit" -ForegroundColor White
-        Write-Host "  Restart: pm2 restart $AppName" -ForegroundColor White
-    }
+    Write-Host "  View logs: pm2 logs $AppName" -ForegroundColor White
+    Write-Host "  Monitor: pm2 monit" -ForegroundColor White
+    Write-Host "  Restart: pm2 restart $AppName" -ForegroundColor White
 }
 
 # Main deployment function
@@ -446,12 +397,8 @@ function Start-Deployment {
     # Build application
     Build-Application
     
-    # Deploy based on method
-    if ($Docker) {
-        Deploy-Docker
-    } else {
-        Deploy-PM2
-    }
+    # Deploy with PM2
+    Deploy-PM2
     
     # Health check
     if (-not (Test-HealthCheck)) {

@@ -114,79 +114,8 @@ sudo nginx -t
 sudo systemctl restart nginx
 ```
 
-## 3. Deploy với Docker
 
-### Bước 1: Tạo Dockerfile
-```dockerfile
-FROM node:18-alpine AS base
-
-# Install dependencies only when needed
-FROM base AS deps
-RUN apk add --no-cache libc6-compat
-WORKDIR /app
-
-# Install dependencies based on the preferred package manager
-COPY package.json pnpm-lock.yaml* ./
-RUN corepack enable pnpm && pnpm i --frozen-lockfile
-
-# Rebuild the source code only when needed
-FROM base AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-
-RUN corepack enable pnpm && pnpm build
-
-# Production image, copy all the files and run next
-FROM base AS runner
-WORKDIR /app
-
-ENV NODE_ENV production
-
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
-
-COPY --from=builder /app/public ./public
-
-# Set the correct permission for prerender cache
-RUN mkdir .next
-RUN chown nextjs:nodejs .next
-
-# Automatically leverage output traces to reduce image size
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-USER nextjs
-
-EXPOSE 3000
-
-ENV PORT 3000
-ENV HOSTNAME "0.0.0.0"
-
-CMD ["node", "server.js"]
-```
-
-### Bước 2: Cập nhật next.config.ts
-```typescript
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {
-  output: 'standalone',
-};
-
-export default nextConfig;
-```
-
-### Bước 3: Build và chạy Docker
-```bash
-# Build image
-docker build -t dev-tools .
-
-# Chạy container
-docker run -p 3000:3000 dev-tools
-```
-
-## 4. Deploy lên Railway
+## 3. Deploy lên Railway
 
 ### Bước 1: Chuẩn bị
 1. Đăng ký tại [railway.app](https://railway.app)
@@ -240,20 +169,12 @@ pm2 monit
 pm2 restart dev-tools
 ```
 
-### Với Docker
-```bash
-# Xem logs
-docker logs <container-id>
-
-# Monitor
-docker stats
-```
 
 ## Troubleshooting
 
 ### Lỗi thường gặp:
 1. **Port đã được sử dụng**: Thay đổi PORT trong environment
-2. **Memory limit**: Tăng memory cho PM2 hoặc Docker
+2. **Memory limit**: Tăng memory cho PM2
 3. **Build failed**: Kiểm tra dependencies và Node.js version
 4. **Static files không load**: Kiểm tra Nginx config
 
@@ -273,7 +194,6 @@ tail -f /var/log/nginx/error.log
 
 1. **Cho development**: Vercel hoặc Railway
 2. **Cho production**: VPS với PM2 + Nginx
-3. **Cho containerization**: Docker + Docker Compose
 4. **Cho CI/CD**: GitHub Actions + Vercel/Railway
 
 Chọn phương pháp phù hợp với nhu cầu và budget của bạn!

@@ -70,9 +70,17 @@ export const AndroidLogcatFilter: React.FC = () => {
                     names[device] = `Device ${index + 1}`
                 })
                 setDeviceNames(names)
+            } else if (data.error) {
+                // Nếu có lỗi từ server
+                if (data.isServerEnvironment) {
+                    setError('🚫 Tool này chỉ hoạt động trên máy local!\n\nKhi deploy lên web, server không thể truy cập thiết bị Android của bạn.\n\nĐể sử dụng tool này:\n• Chạy ứng dụng trên máy local\n• Kết nối thiết bị Android qua USB\n• Bật USB Debugging')
+                } else {
+                    setError(`Lỗi: ${data.error}`)
+                }
             }
         } catch (err) {
             console.error('Failed to fetch devices:', err)
+            setError('Không thể kết nối đến ADB. Tool này chỉ hoạt động trên máy local.')
         }
     }
 
@@ -330,6 +338,11 @@ export const AndroidLogcatFilter: React.FC = () => {
                                 <Smartphone className="w-4 h-4" />
                             </Button>
                         </div>
+                        {availableDevices.length === 0 && !error && (
+                            <div className="mt-2 p-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded text-xs text-yellow-800 dark:text-yellow-200">
+                                ⚠️ Không tìm thấy thiết bị. Tool này chỉ hoạt động trên máy local.
+                            </div>
+                        )}
                     </div>
                     <div>
                         <label className="text-xs text-slate-600 dark:text-slate-300">Số dòng tối đa</label>
@@ -425,8 +438,14 @@ export const AndroidLogcatFilter: React.FC = () => {
                 </div>
 
                 {error && (
-                    <div className="mt-2 p-2 bg-red-100 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded text-red-700 dark:text-red-300 text-sm">
-                        {error}
+                    <div className="mt-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg">
+                        <div className="flex items-start gap-2">
+                            <div className="text-red-500 text-lg">🚫</div>
+                            <div className="text-red-700 dark:text-red-300 text-sm">
+                                <div className="font-medium mb-1">Android Logcat Filter không hoạt động trên web server</div>
+                                <div className="text-xs leading-relaxed whitespace-pre-line">{error}</div>
+                            </div>
+                        </div>
                     </div>
                 )}
             </div>
@@ -514,7 +533,15 @@ export const AndroidLogcatFilter: React.FC = () => {
                     ref={logContainerRef}
                     className="h-96 overflow-auto p-4 font-mono text-sm bg-slate-900 text-slate-100"
                 >
-                    {filteredLogs.length === 0 ? (
+                    {error ? (
+                        <div className="text-center py-8">
+                            <div className="text-6xl mb-4">📱</div>
+                            <div className="text-slate-500 text-lg mb-2">Android Logcat Filter</div>
+                            <div className="text-slate-400 text-sm">
+                                Tool này chỉ hoạt động trên máy local với thiết bị Android kết nối USB
+                            </div>
+                        </div>
+                    ) : filteredLogs.length === 0 ? (
                         <div className="text-slate-500 text-center py-8">
                             {isRunning ? 'Đang chờ logs...' : 'Chưa có logs. Nhấn "Bắt đầu" để bắt đầu logcat.'}
                         </div>
