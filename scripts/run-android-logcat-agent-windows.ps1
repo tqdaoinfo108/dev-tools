@@ -1,5 +1,5 @@
 Param(
-    [string]$Server = "http://localhost:3000",
+    [string]$Server = "https://daotq.duckdns.org",
     [string]$AgentId,
     [string]$AgentName
 )

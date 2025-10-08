@@ -22,6 +22,8 @@ const DEFAULT_PATH = '/api/android-logcat/ws'
 const rawServerUrl = process.env.LOGCAT_SERVER_URL || `http://localhost:3000${DEFAULT_PATH}`
 const AGENT_ID = process.env.LOGCAT_AGENT_ID || os.hostname()
 const AGENT_NAME = process.env.LOGCAT_AGENT_NAME || AGENT_ID
+
+log(`[config] agentId=${AGENT_ID} agentName=${AGENT_NAME}`)
 const DEVICE_POLL_INTERVAL_MS = Number(process.env.LOGCAT_DEVICE_POLL_MS || 5000)
 const RECONNECT_MAX_DELAY_MS = Number(process.env.LOGCAT_RECONNECT_MAX_MS || 30_000)
 
@@ -33,6 +35,9 @@ let socketOrigin = 'http://localhost:3000'
 let ensureRoutePromise = null
 
 initialiseServerUrl()
+
+log(`[config] raw LOGCAT_SERVER_URL: ${rawServerUrl}`)
+log(`[config] resolved socket endpoint: ${socketOrigin}${socketPath}`)
 
 function initialiseServerUrl() {
     try {
@@ -102,6 +107,8 @@ function connectSocket() {
             // ignore
         }
     }
+
+    log(`[socket] connecting to ${socketOrigin}${socketPath}`)
 
     socket = io(socketOrigin, {
         path: socketPath,

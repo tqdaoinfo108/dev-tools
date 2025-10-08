@@ -53,11 +53,11 @@ Tùy chọn:
   --agent-name  Giá trị LOGCAT_AGENT_NAME (mặc định: LOGCAT_AGENT_ID)
 
 Ví dụ:
-  ./run-android-logcat-agent-macos.sh --server http://192.168.0.10:3000 --agent-name "Mac Studio QA"
+  ./run-android-logcat-agent-macos.sh --server https://daotq.duckdns.org --agent-name "Mac Studio QA"
 EOF
 }
 
-SERVER_URL="http://localhost:3000"
+SERVER_URL="https://daotq.duckdns.org"
 AGENT_ID=""
 AGENT_NAME=""
 
