@@ -9,6 +9,7 @@ export const StringTools: React.FC = () => {
   const [input, setInput] = React.useState('')
   const [output, setOutput] = React.useState('')
   const [copied, setCopied] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
 
   const removeDiacritics = (s: string) => s.normalize('NFD').replace(/\p{Diacritic}+/gu, '')
   const slugify = (s: string) =>
@@ -41,7 +42,7 @@ export const StringTools: React.FC = () => {
   const toPascalCase = (s: string) => {
     return s.replace(/(?:^\w|[A-Z]|\b\w)/g, (word) => {
       return word.toUpperCase()
-    }).replace(/\s+/g, '')
+    }).replace(/\s+/g, ' ')
   }
 
   const toSnakeCase = (s: string) => {
@@ -69,43 +70,42 @@ export const StringTools: React.FC = () => {
     return s.length
   }
 
-  const removeEmptyLines = (s: string) => {
-    return s.replace(/^\s*[\r\n]/gm, '')
-  }
+  const removeEmptyLines = (s: string) => s.split(/\r?\n/).filter(line => line.trim().length > 0).join('\n')
 
-  const sortLines = (s: string) => {
-    return s.split('\n').sort().join('\n')
-  }
+  const sortLines = (s: string) => s.split(/\r?\n/).sort((a, b) => a.localeCompare(b)).join('\n')
 
-  const reverseLines = (s: string) => {
-    return s.split('\n').reverse().join('\n')
-  }
+  const reverseLines = (s: string) => s.split(/\r?\n/).reverse().join('\n')
 
-  const removeDuplicates = (s: string) => {
-    return [...new Set(s.split('\n'))].join('\n')
-  }
+  const removeDuplicates = (s: string) => Array.from(new Set(s.split(/\r?\n/))).join('\n')
 
   const base64Encode = (s: string) => {
-    return btoa(unescape(encodeURIComponent(s)))
+    const encoder = new TextEncoder()
+    const bytes = encoder.encode(s)
+    let binary = ''
+    bytes.forEach(byte => {
+      binary += String.fromCharCode(byte)
+    })
+    return btoa(binary)
   }
 
   const base64Decode = (s: string) => {
     try {
-      return decodeURIComponent(escape(atob(s)))
+      const binary = atob(s)
+      const bytes = Uint8Array.from(binary, char => char.charCodeAt(0))
+      const decoder = new TextDecoder()
+      return decoder.decode(bytes)
     } catch {
-      return 'Invalid Base64 string'
+      throw new Error('Invalid Base64 string')
     }
   }
 
-  const urlEncode = (s: string) => {
-    return encodeURIComponent(s)
-  }
+  const urlEncode = (s: string) => encodeURIComponent(s)
 
   const urlDecode = (s: string) => {
     try {
       return decodeURIComponent(s)
     } catch {
-      return 'Invalid URL encoded string'
+      throw new Error('Invalid URL encoded string')
     }
   }
 
@@ -182,8 +182,8 @@ export const StringTools: React.FC = () => {
   const formatJson = (s: string) => {
     try {
       return JSON.stringify(JSON.parse(s), null, 2)
-    } catch {
-      return 'Invalid JSON'
+    } catch (error) {
+      throw new Error('Invalid JSON')
     }
   }
 
@@ -191,34 +191,80 @@ export const StringTools: React.FC = () => {
     try {
       return JSON.stringify(JSON.parse(s))
     } catch {
-      return 'Invalid JSON'
+      throw new Error('Invalid JSON')
     }
   }
 
   const formatXml = (s: string) => {
-    try {
-      const parser = new DOMParser()
-      const xmlDoc = parser.parseFromString(s, 'text/xml')
-      const serializer = new XMLSerializer()
-      return serializer.serializeToString(xmlDoc)
-    } catch {
-      return 'Invalid XML'
+    const prettyPrint = (xml: string) => {
+      const PADDING = '  '
+      const reg = /(>)(<)(\/*)/g
+      let formatted = ''
+      let pad = 0
+      xml = xml.replace(reg, '$1\n$2$3')
+      const nodes = xml.split(/\n/)
+      nodes.forEach((node) => {
+        if (node.match(/.+<\/\w[^>]*>$/)) {
+          formatted += `${PADDING.repeat(pad)}${node}\n`
+        } else if (node.match(/^<\/\w/)) {
+          pad = Math.max(pad - 1, 0)
+          formatted += `${PADDING.repeat(pad)}${node}\n`
+        } else if (node.match(/^<\w([^>]*[^/])?>.*$/)) {
+          formatted += `${PADDING.repeat(pad)}${node}\n`
+          pad += 1
+        } else {
+          formatted += `${PADDING.repeat(pad)}${node}\n`
+        }
+      })
+      return formatted.trim()
     }
+
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(s, 'application/xml')
+    if (doc.getElementsByTagName('parsererror').length > 0) {
+      throw new Error('Invalid XML')
+    }
+    const serializer = new XMLSerializer()
+    const xmlString = serializer.serializeToString(doc)
+    return prettyPrint(xmlString)
   }
 
   const generateQRCode = (s: string) => {
     return `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(s)}`
   }
 
-  const generateHash = (s: string, algorithm: 'md5' | 'sha1' | 'sha256' | 'sha512' = 'sha256') => {
-    // Simple hash implementation (for demo purposes)
-    let hash = 0
-    for (let i = 0; i < s.length; i++) {
-      const char = s.charCodeAt(i)
-      hash = ((hash << 5) - hash) + char
-      hash = hash & hash // Convert to 32bit integer
+  const generateHash = async (s: string, algorithm: 'md5' | 'sha1' | 'sha256' | 'sha512' = 'sha256') => {
+    const algoMap: Record<string, string> = {
+      md5: '',
+      sha1: 'SHA-1',
+      sha256: 'SHA-256',
+      sha512: 'SHA-512'
     }
-    return Math.abs(hash).toString(16)
+
+    const encoder = new TextEncoder()
+    const data = encoder.encode(s)
+
+    if (algorithm === 'md5') {
+      // WebCrypto does not support MD5; provide simple fallback
+      let hash = 0
+      for (let i = 0; i < s.length; i++) {
+        const char = s.charCodeAt(i)
+        hash = ((hash << 5) - hash) + char
+        hash |= 0
+      }
+      return Math.abs(hash).toString(16)
+    }
+
+    const subtleAlgo = algoMap[algorithm]
+    if (!subtleAlgo || !(window.crypto && window.crypto.subtle)) {
+      throw new Error('Trình duyệt không hỗ trợ thuật toán hash này')
+    }
+
+    const digest = await window.crypto.subtle.digest(subtleAlgo, data)
+    const result = Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, '0'))
+      .join('')
+    return result
   }
 
   const generateRandomString = (length: number = 10) => {
@@ -230,21 +276,69 @@ export const StringTools: React.FC = () => {
     return result
   }
 
-  const convertToBinary = (s: string) => {
-    return s.split('').map(char => char.charCodeAt(0).toString(2).padStart(8, '0')).join(' ')
-  }
+  const convertToBinary = (s: string) =>
+    s
+      .split('')
+      .map((char) => char.charCodeAt(0).toString(2).padStart(8, '0'))
+      .join(' ')
 
   const convertFromBinary = (s: string) => {
-    return s.split(' ').map(bin => String.fromCharCode(parseInt(bin, 2))).join('')
+    const bits = s.trim().split(/\s+/).filter(Boolean)
+    if (!bits.length) return ''
+    const chars = bits.map((bin) => {
+      if (!/^[01]+$/.test(bin)) {
+        throw new Error(`Invalid binary chunk: ${bin}`)
+      }
+      return String.fromCharCode(parseInt(bin, 2))
+    })
+    return chars.join('')
   }
 
-  const convertToHex = (s: string) => {
-    return s.split('').map(char => char.charCodeAt(0).toString(16).padStart(2, '0')).join(' ')
-  }
+  const convertToHex = (s: string) =>
+    s
+      .split('')
+      .map((char) => char.charCodeAt(0).toString(16).padStart(2, '0'))
+      .join(' ')
 
   const convertFromHex = (s: string) => {
-    return s.split(' ').map(hex => String.fromCharCode(parseInt(hex, 16))).join('')
+    const cleaned = s.replace(/\s+/g, '')
+    if (cleaned.length === 0) return ''
+    if (cleaned.length % 2 !== 0) {
+      throw new Error('Hex string length must be even')
+    }
+    const chars: string[] = []
+    for (let i = 0; i < cleaned.length; i += 2) {
+      const byte = cleaned.slice(i, i + 2)
+      if (!/^[0-9a-fA-F]{2}$/.test(byte)) {
+        throw new Error(`Invalid hex chunk: ${byte}`)
+      }
+      chars.push(String.fromCharCode(parseInt(byte, 16)))
+    }
+    return chars.join('')
   }
+
+  const runTool = React.useCallback((fn: () => string | Promise<string>) => {
+    try {
+      const result = fn()
+      if (result && typeof (result as any).then === 'function') {
+        ;(result as Promise<string>)
+          .then((value) => {
+            setError(null)
+            setOutput(value)
+          })
+          .catch((err) => {
+            const message = err instanceof Error ? err.message : String(err)
+            setError(message)
+          })
+      } else {
+        setError(null)
+        setOutput(result as string)
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+    }
+  }, [])
 
   const copy = async () => {
     await navigator.clipboard.writeText(output)
@@ -272,6 +366,9 @@ export const StringTools: React.FC = () => {
               {copied ? <ClipboardCheck className="w-4 h-4" /> : <Clipboard className="w-4 h-4" />}
             </Button>
           </div>
+          {error && (
+            <p className="text-xs text-red-500 dark:text-red-300">{error}</p>
+          )}
           <div style={{ height: '300px' }}>
             <TextareaWithLineNumbers 
               readOnly 
@@ -289,11 +386,11 @@ export const StringTools: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Basic Transformations</h3>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={()=>setOutput(input.toUpperCase())}><Type className="w-4 h-4 mr-1" /> UPPERCASE</Button>
-            <Button onClick={()=>setOutput(input.toLowerCase())}><Type className="w-4 h-4 mr-1" /> lowercase</Button>
-            <Button onClick={()=>setOutput(toTitleCase(input))}><Type className="w-4 h-4 mr-1" /> Title Case</Button>
-            <Button onClick={()=>setOutput(input.replace(/\s+/g,' ').trim())}><AlignLeft className="w-4 h-4 mr-1" /> Trim spaces</Button>
-            <Button onClick={()=>setOutput(removeDiacritics(input))}><Wand2 className="w-4 h-4 mr-1" /> Bỏ dấu</Button>
+            <Button onClick={() => runTool(() => input.toUpperCase())}><Type className="w-4 h-4 mr-1" /> UPPERCASE</Button>
+            <Button onClick={() => runTool(() => input.toLowerCase())}><Type className="w-4 h-4 mr-1" /> lowercase</Button>
+            <Button onClick={() => runTool(() => toTitleCase(input))}><Type className="w-4 h-4 mr-1" /> Title Case</Button>
+            <Button onClick={() => runTool(() => input.replace(/\s+/g,' ').trim())}><AlignLeft className="w-4 h-4 mr-1" /> Trim spaces</Button>
+            <Button onClick={() => runTool(() => removeDiacritics(input))}><Wand2 className="w-4 h-4 mr-1" /> Bỏ dấu</Button>
           </div>
         </div>
 
@@ -301,12 +398,12 @@ export const StringTools: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Case Conversions</h3>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={()=>setOutput(toCamelCase(input))}><Type className="w-4 h-4 mr-1" /> camelCase</Button>
-            <Button onClick={()=>setOutput(toPascalCase(input))}><Type className="w-4 h-4 mr-1" /> PascalCase</Button>
-            <Button onClick={()=>setOutput(toSnakeCase(input))}><Type className="w-4 h-4 mr-1" /> snake_case</Button>
-            <Button onClick={()=>setOutput(toKebabCase(input))}><Type className="w-4 h-4 mr-1" /> kebab-case</Button>
-            <Button onClick={()=>setOutput(slugify(input))}><Wand2 className="w-4 h-4 mr-1" /> Slugify</Button>
-            <Button onClick={()=>setOutput(toGitBranch(input))}><GitBranch className="w-4 h-4 mr-1" /> Git Branch</Button>
+            <Button onClick={() => runTool(() => toCamelCase(input))}><Type className="w-4 h-4 mr-1" /> camelCase</Button>
+            <Button onClick={() => runTool(() => toPascalCase(input))}><Type className="w-4 h-4 mr-1" /> PascalCase</Button>
+            <Button onClick={() => runTool(() => toSnakeCase(input))}><Type className="w-4 h-4 mr-1" /> snake_case</Button>
+            <Button onClick={() => runTool(() => toKebabCase(input))}><Type className="w-4 h-4 mr-1" /> kebab-case</Button>
+            <Button onClick={() => runTool(() => slugify(input))}><Wand2 className="w-4 h-4 mr-1" /> Slugify</Button>
+            <Button onClick={() => runTool(() => toGitBranch(input))}><GitBranch className="w-4 h-4 mr-1" /> Git Branch</Button>
           </div>
         </div>
 
@@ -314,11 +411,11 @@ export const StringTools: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Text Manipulation</h3>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={()=>setOutput(reverse(input))}><RotateCcw className="w-4 h-4 mr-1" /> Reverse</Button>
-            <Button onClick={()=>setOutput(removeEmptyLines(input))}><AlignLeft className="w-4 h-4 mr-1" /> Remove empty lines</Button>
-            <Button onClick={()=>setOutput(sortLines(input))}><AlignCenter className="w-4 h-4 mr-1" /> Sort lines</Button>
-            <Button onClick={()=>setOutput(reverseLines(input))}><RotateCw className="w-4 h-4 mr-1" /> Reverse lines</Button>
-            <Button onClick={()=>setOutput(removeDuplicates(input))}><Hash className="w-4 h-4 mr-1" /> Remove duplicates</Button>
+            <Button onClick={() => runTool(() => reverse(input))}><RotateCcw className="w-4 h-4 mr-1" /> Reverse</Button>
+            <Button onClick={() => runTool(() => removeEmptyLines(input))}><AlignLeft className="w-4 h-4 mr-1" /> Remove empty lines</Button>
+            <Button onClick={() => runTool(() => sortLines(input))}><AlignCenter className="w-4 h-4 mr-1" /> Sort lines</Button>
+            <Button onClick={() => runTool(() => reverseLines(input))}><RotateCw className="w-4 h-4 mr-1" /> Reverse lines</Button>
+            <Button onClick={() => runTool(() => removeDuplicates(input))}><Hash className="w-4 h-4 mr-1" /> Remove duplicates</Button>
           </div>
         </div>
 
@@ -326,12 +423,12 @@ export const StringTools: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Encoding/Decoding</h3>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={()=>setOutput(base64Encode(input))}><Hash className="w-4 h-4 mr-1" /> Base64 Encode</Button>
-            <Button onClick={()=>setOutput(base64Decode(input))}><Hash className="w-4 h-4 mr-1" /> Base64 Decode</Button>
-            <Button onClick={()=>setOutput(urlEncode(input))}><Hash className="w-4 h-4 mr-1" /> URL Encode</Button>
-            <Button onClick={()=>setOutput(urlDecode(input))}><Hash className="w-4 h-4 mr-1" /> URL Decode</Button>
-            <Button onClick={()=>setOutput(escapeHtml(input))}><Type className="w-4 h-4 mr-1" /> Escape HTML</Button>
-            <Button onClick={()=>setOutput(unescapeHtml(input))}><Type className="w-4 h-4 mr-1" /> Unescape HTML</Button>
+            <Button onClick={() => runTool(() => base64Encode(input))}><Hash className="w-4 h-4 mr-1" /> Base64 Encode</Button>
+            <Button onClick={() => runTool(() => base64Decode(input))}><Hash className="w-4 h-4 mr-1" /> Base64 Decode</Button>
+            <Button onClick={() => runTool(() => urlEncode(input))}><Hash className="w-4 h-4 mr-1" /> URL Encode</Button>
+            <Button onClick={() => runTool(() => urlDecode(input))}><Hash className="w-4 h-4 mr-1" /> URL Decode</Button>
+            <Button onClick={() => runTool(() => escapeHtml(input))}><Type className="w-4 h-4 mr-1" /> Escape HTML</Button>
+            <Button onClick={() => runTool(() => unescapeHtml(input))}><Type className="w-4 h-4 mr-1" /> Unescape HTML</Button>
           </div>
         </div>
 
@@ -339,10 +436,10 @@ export const StringTools: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Data Extraction</h3>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={()=>setOutput(extractEmails(input))}><Mail className="w-4 h-4 mr-1" /> Extract Emails</Button>
-            <Button onClick={()=>setOutput(extractUrls(input))}><Globe className="w-4 h-4 mr-1" /> Extract URLs</Button>
-            <Button onClick={()=>setOutput(extractPhones(input))}><Phone className="w-4 h-4 mr-1" /> Extract Phones</Button>
-            <Button onClick={()=>setOutput(extractNumbers(input))}><Calculator className="w-4 h-4 mr-1" /> Extract Numbers</Button>
+            <Button onClick={() => runTool(() => extractEmails(input))}><Mail className="w-4 h-4 mr-1" /> Extract Emails</Button>
+            <Button onClick={() => runTool(() => extractUrls(input))}><Globe className="w-4 h-4 mr-1" /> Extract URLs</Button>
+            <Button onClick={() => runTool(() => extractPhones(input))}><Phone className="w-4 h-4 mr-1" /> Extract Phones</Button>
+            <Button onClick={() => runTool(() => extractNumbers(input))}><Calculator className="w-4 h-4 mr-1" /> Extract Numbers</Button>
           </div>
         </div>
 
@@ -350,10 +447,10 @@ export const StringTools: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Generators</h3>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={()=>setOutput(generatePassword(12))}><Eye className="w-4 h-4 mr-1" /> Generate Password</Button>
-            <Button onClick={()=>setOutput(generateUUID())}><Hash className="w-4 h-4 mr-1" /> Generate UUID</Button>
-            <Button onClick={()=>setOutput(generateRandomString(10))}><Type className="w-4 h-4 mr-1" /> Random String</Button>
-            <Button onClick={()=>setOutput(generateLoremIpsum(50))}><Type className="w-4 h-4 mr-1" /> Lorem Ipsum</Button>
+            <Button onClick={() => runTool(() => generatePassword(12))}><Eye className="w-4 h-4 mr-1" /> Generate Password</Button>
+            <Button onClick={() => runTool(() => generateUUID())}><Hash className="w-4 h-4 mr-1" /> Generate UUID</Button>
+            <Button onClick={() => runTool(() => generateRandomString(10))}><Type className="w-4 h-4 mr-1" /> Random String</Button>
+            <Button onClick={() => runTool(() => generateLoremIpsum(50))}><Type className="w-4 h-4 mr-1" /> Lorem Ipsum</Button>
           </div>
         </div>
 
@@ -361,13 +458,13 @@ export const StringTools: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Format & Convert</h3>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={()=>setOutput(formatJson(input))}><Type className="w-4 h-4 mr-1" /> Format JSON</Button>
-            <Button onClick={()=>setOutput(minifyJson(input))}><Type className="w-4 h-4 mr-1" /> Minify JSON</Button>
-            <Button onClick={()=>setOutput(formatXml(input))}><Type className="w-4 h-4 mr-1" /> Format XML</Button>
-            <Button onClick={()=>setOutput(convertToBinary(input))}><Calculator className="w-4 h-4 mr-1" /> To Binary</Button>
-            <Button onClick={()=>setOutput(convertFromBinary(input))}><Calculator className="w-4 h-4 mr-1" /> From Binary</Button>
-            <Button onClick={()=>setOutput(convertToHex(input))}><Hash className="w-4 h-4 mr-1" /> To Hex</Button>
-            <Button onClick={()=>setOutput(convertFromHex(input))}><Hash className="w-4 h-4 mr-1" /> From Hex</Button>
+            <Button onClick={() => runTool(() => formatJson(input))}><Type className="w-4 h-4 mr-1" /> Format JSON</Button>
+            <Button onClick={() => runTool(() => minifyJson(input))}><Type className="w-4 h-4 mr-1" /> Minify JSON</Button>
+            <Button onClick={() => runTool(() => formatXml(input))}><Type className="w-4 h-4 mr-1" /> Format XML</Button>
+            <Button onClick={() => runTool(() => convertToBinary(input))}><Calculator className="w-4 h-4 mr-1" /> To Binary</Button>
+            <Button onClick={() => runTool(() => convertFromBinary(input))}><Calculator className="w-4 h-4 mr-1" /> From Binary</Button>
+            <Button onClick={() => runTool(() => convertToHex(input))}><Hash className="w-4 h-4 mr-1" /> To Hex</Button>
+            <Button onClick={() => runTool(() => convertFromHex(input))}><Hash className="w-4 h-4 mr-1" /> From Hex</Button>
           </div>
         </div>
 
@@ -375,8 +472,8 @@ export const StringTools: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Hash & Security</h3>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={()=>setOutput(generateHash(input, 'sha256'))}><Hash className="w-4 h-4 mr-1" /> SHA256 Hash</Button>
-            <Button onClick={()=>setOutput(generateQRCode(input))}><Globe className="w-4 h-4 mr-1" /> Generate QR Code</Button>
+            <Button onClick={() => runTool(() => generateHash(input, 'sha256'))}><Hash className="w-4 h-4 mr-1" /> SHA256 Hash</Button>
+            <Button onClick={() => runTool(() => generateQRCode(input))}><Globe className="w-4 h-4 mr-1" /> Generate QR Code</Button>
           </div>
         </div>
 
@@ -384,7 +481,7 @@ export const StringTools: React.FC = () => {
         <div>
           <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-3">Statistics</h3>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={()=>setOutput(`Characters: ${charCount(input)}\nWords: ${wordCount(input)}`)}>
+            <Button onClick={() => runTool(() => `Characters: ${charCount(input)}\nWords: ${wordCount(input)}`)}>
               <Hash className="w-4 h-4 mr-1" /> Show Stats
             </Button>
           </div>
