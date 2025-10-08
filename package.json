@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
-    "start": "next start"
+    "start": "next start",
+    "android-agent": "node scripts/android-logcat-agent.js"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -20,7 +21,10 @@
     "next": "15.5.3",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "react-json-view": "^1.21.3"
+    "react-json-view": "^1.21.3",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
