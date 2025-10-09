@@ -38,6 +38,8 @@ type StreamContext = {
     cancel: (() => void) | null
 }
 
+type AdbStreamReader = ReturnType<AdbSocket['readable']['getReader']>
+
 export const AndroidLogcatWebAdb: React.FC = () => {
     const [connectionState, setConnectionState] = React.useState<ConnectionState>('disconnected')
     const [devices, setDevices] = React.useState<DeviceSummary[]>([])
@@ -141,7 +143,7 @@ export const AndroidLogcatWebAdb: React.FC = () => {
             const context: StreamContext = { adb, socket: null, cancel: null }
             streamContextRef.current = context
 
-            let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
+            let reader: AdbStreamReader | null = null
 
             try {
                 const socket = await adb.createSocket('shell:logcat -v threadtime')
