@@ -40,6 +40,10 @@ type StreamContext = {
 
 type AdbStreamReader = ReturnType<AdbSocket['readable']['getReader']>
 
+function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
+    return Boolean(value) && typeof value === 'object' && typeof (value as PromiseLike<T>).then === 'function'
+}
+
 export const AndroidLogcatWebAdb: React.FC = () => {
     const [connectionState, setConnectionState] = React.useState<ConnectionState>('disconnected')
     const [devices, setDevices] = React.useState<DeviceSummary[]>([])
@@ -157,7 +161,10 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                     if (reader) {
                         void reader.cancel().catch(() => undefined)
                     }
-                    void socket.close().catch(() => undefined)
+                    const closeResult = socket.close()
+                    if (isPromiseLike(closeResult)) {
+                        void closeResult.then(undefined, () => undefined)
+                    }
                 }
                 context.cancel = cancel
 
@@ -433,7 +440,6 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                 </Button>
                                 <Button
                                     size="sm"
-                                    variant="outline"
                                     onClick={handleRefresh}
                                     disabled={busy}
                                     className="whitespace-nowrap"
@@ -441,7 +447,7 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                     <RefreshCw className="mr-2 h-4 w-4" />
                                     Lam moi
                                 </Button>
-                                <Button size="sm" variant="outline" onClick={handleExport} disabled={!adEvents.length}>
+                                <Button size="sm"  onClick={handleExport} disabled={!adEvents.length}>
                                     <Download className="mr-2 h-4 w-4" />
                                     Export Ad
                                 </Button>
