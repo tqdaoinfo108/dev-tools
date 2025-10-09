@@ -634,7 +634,7 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                     <RefreshCw className="mr-2 h-4 w-4" />
                                     Lam moi
                                 </Button>
-                                <Button size="sm" variant="outline" onClick={handleExport} disabled={!adEvents.length}>
+                                <Button size="sm" variant="secondary" onClick={handleExport} disabled={!adEvents.length}>
                                     <Download className="mr-2 h-4 w-4" />
                                     Export quang cao
                                 </Button>
@@ -665,7 +665,6 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                 />
                                 <Button
                                     size="sm"
-                                    variant="outline"
                                     onClick={handleApplyPackageFilter}
                                     disabled={busy || connectionState === 'connecting'}
                                 >
