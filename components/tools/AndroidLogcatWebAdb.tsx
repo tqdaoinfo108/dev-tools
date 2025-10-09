@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import * as React from 'react'
 import clsx from 'clsx'
@@ -7,7 +7,11 @@ import { Download, Trash2, Wifi, Smartphone, RefreshCw, Link2 } from 'lucide-rea
 import * as XLSX from 'xlsx'
 import { Adb, AdbDaemonTransport, type AdbSocket } from '@yume-chan/adb'
 import AdbWebCredentialStore from '@yume-chan/adb-credential-web'
-import { AdbDaemonWebUsbDeviceManager, AdbDefaultInterfaceFilter } from '@yume-chan/adb-daemon-webusb'
+import {
+    AdbDaemonWebUsbDeviceManager,
+    AdbDefaultInterfaceFilter,
+    type AdbDaemonWebUsbDevice
+} from '@yume-chan/adb-daemon-webusb'
 
 type DeviceSummary = {
     serial: string
@@ -47,6 +51,44 @@ function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
     return Boolean(value) && typeof value === 'object' && typeof (value as PromiseLike<T>).then === 'function'
 }
 
+async function resolvePackagePids(adb: Adb, packageName: string): Promise<string[]> {
+    const socket = await adb.createSocket(`shell:pidof ${packageName}`)
+    let reader: AdbStreamReader | null = null
+    const decoder = new TextDecoder()
+    let output = ''
+
+    try {
+        reader = socket.readable.getReader()
+        while (true) {
+            const { value, done } = await reader.read()
+            if (done) break
+            if (value && value.length) {
+                output += decoder.decode(value, { stream: true })
+            }
+        }
+        output += decoder.decode()
+    } finally {
+        if (reader) {
+            try {
+                await reader.cancel()
+            } catch (cancelError) {
+                console.warn('[AndroidLogcatWebAdb] resolvePackagePids cancel failed', cancelError)
+            }
+        }
+        const closeResult = socket.close()
+        if (isPromiseLike(closeResult)) {
+            await closeResult.then(undefined, () => undefined)
+        }
+    }
+
+    const candidates = output
+        .trim()
+        .split(/\s+/)
+        .filter((chunk) => /^\d+$/.test(chunk))
+
+    return candidates
+}
+
 export const AndroidLogcatWebAdb: React.FC = () => {
     const [connectionState, setConnectionState] = React.useState<ConnectionState>('disconnected')
     const [devices, setDevices] = React.useState<DeviceSummary[]>([])
@@ -55,12 +97,19 @@ export const AndroidLogcatWebAdb: React.FC = () => {
     const [error, setError] = React.useState<string | null>(null)
     const [busy, setBusy] = React.useState<boolean>(false)
     const [supported, setSupported] = React.useState<boolean>(true)
+    const [packageFilter, setPackageFilter] = React.useState<string>('')
+    const [packageFilterError, setPackageFilterError] = React.useState<string | null>(null)
+    const [activePackageInfo, setActivePackageInfo] = React.useState<{ packageName: string; pids: string[] } | null>(
+        null
+    )
 
     const rawLogContainerRef = React.useRef<HTMLDivElement>(null)
     const eventCounterRef = React.useRef(0)
     const streamContextRef = React.useRef<StreamContext | null>(null)
     const abortControllerRef = React.useRef<AbortController | null>(null)
     const streamTaskRef = React.useRef<Promise<void> | null>(null)
+    const deviceHandleRef = React.useRef<AdbDaemonWebUsbDevice | null>(null)
+    const packageFilterRef = React.useRef<string>('')
 
     const filteredLogs = React.useMemo(() => {
         if (selectedDevice === 'all') return logs
@@ -99,6 +148,10 @@ export const AndroidLogcatWebAdb: React.FC = () => {
     }, [])
 
     React.useEffect(() => {
+        packageFilterRef.current = packageFilter
+    }, [packageFilter])
+
+    React.useEffect(() => {
         if (!rawLogContainerRef.current) return
         rawLogContainerRef.current.scrollTop = rawLogContainerRef.current.scrollHeight
     }, [filteredLogs])
@@ -120,24 +173,35 @@ export const AndroidLogcatWebAdb: React.FC = () => {
         }
     }, [])
 
-    const handleDisconnect = React.useCallback(async () => {
-        await teardownStream()
+    const handleDisconnect = React.useCallback(
+        async (options?: { preserveDevices?: boolean; preserveHandle?: boolean }) => {
+            await teardownStream()
 
-        const task = streamTaskRef.current
-        if (task) {
-            try {
-                await task
-            } catch (waitError) {
-                console.warn('[AndroidLogcatWebAdb] Stream task error during disconnect', waitError)
+            const task = streamTaskRef.current
+            if (task) {
+                try {
+                    await task
+                } catch (waitError) {
+                    console.warn('[AndroidLogcatWebAdb] Stream task error during disconnect', waitError)
+                }
+                streamTaskRef.current = null
             }
-            streamTaskRef.current = null
-        }
 
-        streamContextRef.current = null
-        setConnectionState('disconnected')
-        setDevices([])
-        setError(null)
-    }, [teardownStream])
+            streamContextRef.current = null
+            setConnectionState('disconnected')
+            if (!options?.preserveDevices) {
+                setDevices([])
+                setSelectedDevice('all')
+            }
+            setError(null)
+            setPackageFilterError(null)
+            setActivePackageInfo(null)
+            if (!options?.preserveHandle) {
+                deviceHandleRef.current = null
+            }
+        },
+        [teardownStream]
+    )
 
     React.useEffect(() => {
         return () => {
@@ -146,19 +210,49 @@ export const AndroidLogcatWebAdb: React.FC = () => {
     }, [handleDisconnect])
 
     const startLogcatStream = React.useCallback(
-        async (adb: Adb, serial: string, name: string, abortSignal: AbortSignal) => {
+        async (adb: Adb, serial: string, name: string, abortSignal: AbortSignal, packageName: string) => {
             const context: StreamContext = { adb, socket: null, cancel: null }
             streamContextRef.current = context
 
             let reader: AdbStreamReader | null = null
+            let resolvedPids: string[] = []
+            let command = 'shell:logcat -v threadtime'
+            let shouldClientFilter = false
+            const trimmedPackage = packageName.trim()
 
             try {
-                const socket = await adb.createSocket('shell:logcat -v threadtime')
+                if (trimmedPackage) {
+                    try {
+                        resolvedPids = await resolvePackagePids(adb, trimmedPackage)
+                        if (resolvedPids.length) {
+                            command = `shell:logcat -v threadtime --pid=${resolvedPids.join(',')}`
+                            setPackageFilterError(null)
+                            setActivePackageInfo({ packageName: trimmedPackage, pids: resolvedPids })
+                        } else {
+                            shouldClientFilter = true
+                            setPackageFilterError(
+                                `Khong tim thay PID cho package "${trimmedPackage}". Se loc bang ten goi.`
+                            )
+                            setActivePackageInfo(null)
+                        }
+                    } catch (pidError) {
+                        console.error('[AndroidLogcatWebAdb] Resolve package PID failed', pidError)
+                        shouldClientFilter = true
+                        setPackageFilterError('Khong doc duoc PID tu thiet bi. Se loc bang ten goi.')
+                        setActivePackageInfo(null)
+                    }
+                } else {
+                    setPackageFilterError(null)
+                    setActivePackageInfo(null)
+                }
+
+                const socket = await adb.createSocket(command)
                 context.socket = socket
 
                 reader = socket.readable.getReader()
                 const decoder = new TextDecoder()
                 let buffer = ''
+                const packageNeedle = trimmedPackage ? trimmedPackage.toLowerCase() : null
 
                 const cancel = () => {
                     if (reader) {
@@ -188,6 +282,11 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                     for (const rawLine of lines) {
                         const line = rawLine.trim()
                         if (!line) continue
+                        if (trimmedPackage && shouldClientFilter && packageNeedle) {
+                            if (!line.toLowerCase().includes(packageNeedle)) {
+                                continue
+                            }
+                        }
 
                         const event = buildLogEvent(line, serial, name, eventCounterRef.current++)
                         setLogs((prev) => {
@@ -246,6 +345,84 @@ export const AndroidLogcatWebAdb: React.FC = () => {
         },
         []
     )
+
+    const connectToDevice = React.useCallback(
+        async (device: AdbDaemonWebUsbDevice, options?: { resetLogs?: boolean }) => {
+            const serial = device.serial || device.raw.serialNumber || 'unknown'
+            const name = device.name || device.raw.productName || serial
+            const connection = await device.connect()
+            const credentialStore = new AdbWebCredentialStore('dev-tools-webadb')
+
+            const transport = await AdbDaemonTransport.authenticate({
+                serial,
+                connection,
+                credentialStore
+            })
+
+            const adb = new Adb(transport)
+
+            const controller = new AbortController()
+            abortControllerRef.current = controller
+            deviceHandleRef.current = device
+
+            if (options?.resetLogs ?? true) {
+                setLogs([])
+                setSelectedDevice('all')
+                eventCounterRef.current = 0
+            }
+
+            const nowIso = new Date().toISOString()
+            setDevices([{ serial, name, lastSeen: nowIso, agentName: 'WebADB' }])
+            setSelectedDevice(serial)
+
+            const trimmedFilter = packageFilterRef.current.trim()
+            const task = startLogcatStream(adb, serial, name, controller.signal, trimmedFilter)
+            streamTaskRef.current = task
+            void task.catch((streamError) => {
+                if (streamError) {
+                    console.error('[AndroidLogcatWebAdb] Stream task error', streamError)
+                }
+            })
+        },
+        [startLogcatStream]
+    )
+
+    const restartStream = React.useCallback(async () => {
+        const device = deviceHandleRef.current
+        if (!device) {
+            setPackageFilterError('Khong tim thay thong tin thiet bi. Bam "Ket noi thiet bi" de ket noi lai.')
+            return false
+        }
+
+        setBusy(true)
+        setError(null)
+
+        try {
+            await handleDisconnect({ preserveDevices: true, preserveHandle: true })
+
+            setLogs([])
+            setSelectedDevice('all')
+            eventCounterRef.current = 0
+            setConnectionState('connecting')
+
+            await connectToDevice(device, { resetLogs: false })
+            return true
+        } catch (restartError) {
+            console.error('[AndroidLogcatWebAdb] Restart stream failed', restartError)
+            setError(
+                restartError instanceof Error && restartError.message
+                    ? restartError.message
+                    : 'Khong the ket noi lai thiet bi. Thu ngat ket noi va ket noi lai.'
+            )
+            setConnectionState('disconnected')
+            setDevices([])
+            setSelectedDevice('all')
+            deviceHandleRef.current = null
+            return false
+        } finally {
+            setBusy(false)
+        }
+    }, [connectToDevice, handleDisconnect])
     const handleConnect = React.useCallback(async () => {
         if (busy || connectionState === 'connecting') {
             return
@@ -279,34 +456,7 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                 return
             }
 
-            const serial = device.serial || device.raw.serialNumber || 'unknown'
-            const name = device.name || device.raw.productName || serial
-            const connection = await device.connect()
-            const credentialStore = new AdbWebCredentialStore('dev-tools-webadb')
-
-            const transport = await AdbDaemonTransport.authenticate({
-                serial,
-                connection,
-                credentialStore
-            })
-
-            const adb = new Adb(transport)
-
-            const controller = new AbortController()
-            abortControllerRef.current = controller
-
-            setDevices([
-                { serial, name, lastSeen: new Date().toISOString(), agentName: 'WebADB' }
-            ])
-            setSelectedDevice(serial)
-
-            const task = startLogcatStream(adb, serial, name, controller.signal)
-            streamTaskRef.current = task
-            void task.catch((streamError) => {
-                if (streamError) {
-                    console.error('[AndroidLogcatWebAdb] Stream task error', streamError)
-                }
-            })
+            await connectToDevice(device, { resetLogs: false })
         } catch (connectError) {
             console.error('[AndroidLogcatWebAdb] Connect failed', connectError)
             setError(
@@ -318,12 +468,11 @@ export const AndroidLogcatWebAdb: React.FC = () => {
         } finally {
             setBusy(false)
         }
-    }, [busy, connectionState, handleDisconnect, startLogcatStream, supported])
+    }, [busy, connectionState, connectToDevice, handleDisconnect, supported])
 
     const handleRefresh = React.useCallback(async () => {
         if (connectionState === 'connected') {
-            await handleDisconnect()
-            await handleConnect()
+            await restartStream()
             return
         }
 
@@ -344,7 +493,7 @@ export const AndroidLogcatWebAdb: React.FC = () => {
             setDevices(
                 authorised.map((device) => ({
                     serial: device.serial || device.raw.serialNumber || 'unknown',
-                    name: device.name || device.raw.productName || 'Android Device',
+                    name: device.name || device.raw.productName || 'Thiet bi Android',
                     lastSeen: new Date().toISOString(),
                     agentName: 'WebADB'
                 }))
@@ -354,7 +503,41 @@ export const AndroidLogcatWebAdb: React.FC = () => {
             console.error('[AndroidLogcatWebAdb] Refresh devices failed', refreshError)
             setError('Khong the doc danh sach thiet bi. Hay thu lai.')
         }
-    }, [connectionState, handleConnect, handleDisconnect])
+    }, [connectionState, restartStream])
+
+    const handleApplyPackageFilter = React.useCallback(async () => {
+        const trimmed = packageFilter.trim()
+        setPackageFilter(trimmed)
+        packageFilterRef.current = trimmed
+
+        if (connectionState !== 'connected') {
+            if (trimmed) {
+                setPackageFilterError('Ket noi thiet bi truoc khi loc package.')
+            } else {
+                setPackageFilterError(null)
+            }
+            return
+        }
+
+        setPackageFilterError(null)
+        await restartStream()
+    }, [connectionState, packageFilter, restartStream])
+
+    const handleClearPackageFilter = React.useCallback(async () => {
+        if (!packageFilterRef.current) {
+            setPackageFilter('')
+            setPackageFilterError(null)
+            setActivePackageInfo(null)
+            return
+        }
+        packageFilterRef.current = ''
+        setPackageFilter('')
+        setPackageFilterError(null)
+        setActivePackageInfo(null)
+        if (connectionState === 'connected') {
+            await restartStream()
+        }
+    }, [connectionState, restartStream])
 
     const handleExport = React.useCallback(() => {
         if (!adEvents.length) return
@@ -401,11 +584,11 @@ export const AndroidLogcatWebAdb: React.FC = () => {
     const currentStatus = React.useMemo(() => {
         switch (connectionState) {
             case 'connected':
-                return { label: 'Connected', className: 'bg-emerald-500' }
+                return { label: 'Da ket noi', className: 'bg-emerald-500' }
             case 'connecting':
-                return { label: 'Connecting', className: 'bg-amber-500 animate-pulse' }
+                return { label: 'Dang ket noi', className: 'bg-amber-500 animate-pulse' }
             default:
-                return { label: 'Disconnected', className: 'bg-red-500' }
+                return { label: 'Da ngat', className: 'bg-red-500' }
         }
     }, [connectionState])
     return (
@@ -418,10 +601,10 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                 <div>
                                     <div className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
                                         <Wifi className="h-4 w-4" />
-                                        Android WebADB Monitor
+                                        Theo doi log Android (WebADB)
                                     </div>
                                     <p className="text-xs text-slate-500 dark:text-slate-400">
-                                        Ket noi truc tiep qua WebUSB de doc logcat va phat hien ad impression.
+                                        Ket noi qua WebUSB de doc logcat va theo doi log quang cao.
                                     </p>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 text-xs uppercase text-slate-600 dark:text-slate-300">
@@ -451,18 +634,69 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                     <RefreshCw className="mr-2 h-4 w-4" />
                                     Lam moi
                                 </Button>
-                                <Button size="sm"  onClick={handleExport} disabled={!adEvents.length}>
+                                <Button size="sm" variant="outline" onClick={handleExport} disabled={!adEvents.length}>
                                     <Download className="mr-2 h-4 w-4" />
-                                    Export Ad
+                                    Export quang cao
                                 </Button>
                                 <Button size="sm" variant="ghost" onClick={handleClear} disabled={!logs.length}>
                                     <Trash2 className="mr-2 h-4 w-4" />
-                                    Clear Log
+                                    Xoa log
                                 </Button>
                                 <span className="ml-auto text-sm text-slate-600 dark:text-slate-300">
                                     {filteredLogs.length} dang hien - {logs.length} tong - gioi han {MAX_ENTRIES}
                                 </span>
                             </div>
+                            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-800/40">
+                                <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
+                                    Loc theo package ID
+                                </label>
+                                <input
+                                    type="text"
+                                    value={packageFilter}
+                                    onChange={(event) => setPackageFilter(event.target.value)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === 'Enter') {
+                                            event.preventDefault()
+                                            void handleApplyPackageFilter()
+                                        }
+                                    }}
+                                    placeholder="vd: com.example.app"
+                                    className="h-8 min-w-[220px] rounded border border-slate-300 bg-white px-3 text-sm text-slate-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:focus:border-blue-400 dark:focus:ring-blue-500/30"
+                                />
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={handleApplyPackageFilter}
+                                    disabled={busy || connectionState === 'connecting'}
+                                >
+                                    Ap dung
+                                </Button>
+                                {packageFilter && (
+                                    <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={handleClearPackageFilter}
+                                        disabled={busy || connectionState === 'connecting'}
+                                    >
+                                        Xoa
+                                    </Button>
+                                )}
+                                {activePackageInfo && (
+                                    <>
+                                        <span className="rounded-full bg-emerald-200 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                            Goi: {activePackageInfo.packageName}
+                                        </span>
+                                        <span className="rounded-full bg-emerald-200 px-2 py-0.5 text-[10px] font-semibold text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                            PID: {activePackageInfo.pids.join(', ')}
+                                        </span>
+                                    </>
+                                )}
+                            </div>
+                            {packageFilterError && (
+                                <div className="rounded-lg border border-amber-500/40 bg-amber-50 p-3 text-xs text-amber-700 dark:border-amber-500/30 dark:bg-amber-900/20 dark:text-amber-200">
+                                    {packageFilterError}
+                                </div>
+                            )}
 
                             {error && (
                                 <div className="rounded-lg border border-red-500/40 bg-red-50 p-3 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-900/20 dark:text-red-200">
@@ -476,7 +710,7 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
                                 <Smartphone className="h-4 w-4" />
-                                Connected Devices
+                                Thiet bi ket noi
                             </div>
                             <span className="text-xs text-slate-500 dark:text-slate-400">{devices.length}</span>
                         </div>
@@ -521,7 +755,7 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                                 <div className="text-[11px] text-slate-400 dark:text-slate-500">Nguon: {device.agentName}</div>
                                             )}
                                             <div className="text-[11px] text-slate-400 dark:text-slate-500">
-                                                Last seen: {formatTime(device.lastSeen)}
+                                                Lan cuoi: {formatTime(device.lastSeen)}
                                             </div>
                                             <div className="mt-1 inline-flex items-center gap-2 text-[10px] font-semibold">
                                                 <span className="rounded-full bg-slate-200 px-2 py-0.5 text-slate-600 dark:bg-slate-700 dark:text-slate-200">
@@ -541,7 +775,7 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                 <div className="flex h-full flex-col gap-4">
                     <div className="min-h-[220px] rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900">
                         <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3 text-sm font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                            <span>Ad Impression Summary - {selectedDevice === 'all' ? 'All devices' : selectedDevice}</span>
+                            <span>Tong hop ad impression - {selectedDevice === 'all' ? 'Tat ca thiet bi' : selectedDevice}</span>
                             <span className="text-xs text-slate-500 dark:text-slate-400">{summaryCountLabel}</span>
                         </div>
                         <div className="max-h-[40vh] overflow-auto">
@@ -554,12 +788,12 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                 <table className="min-w-full table-fixed text-left text-sm">
                                     <thead className="sticky top-0 bg-slate-100 text-xs font-medium uppercase text-slate-600 dark:bg-slate-800 dark:text-slate-300">
                                         <tr>
-                                            <th className="w-48 px-4 py-2">Device</th>
-                                            <th className="w-32 px-4 py-2">Ad Source</th>
-                                            <th className="w-32 px-4 py-2">Format</th>
-                                            <th className="w-40 px-4 py-2">Received At</th>
-                                            <th className="w-32 px-4 py-2">Thread Time</th>
-                                            <th className="px-4 py-2">Raw Event</th>
+                                            <th className="w-48 px-4 py-2">Thiet bi</th>
+                                            <th className="w-32 px-4 py-2">Nguon quang cao</th>
+                                            <th className="w-32 px-4 py-2">Dinh dang</th>
+                                            <th className="w-40 px-4 py-2">Thoi diem nhan</th>
+                                            <th className="w-32 px-4 py-2">Thoi gian thread</th>
+                                            <th className="px-4 py-2">Log goc</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-200 dark:divide-slate-700">
@@ -610,8 +844,8 @@ export const AndroidLogcatWebAdb: React.FC = () => {
 
                     <div className="flex-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-950 shadow-sm dark:border-slate-700">
                         <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-4 py-3 text-sm font-medium text-slate-100">
-                            <span>Raw Log Stream - {selectedDevice === 'all' ? 'All devices' : selectedDevice}</span>
-                            <span className="text-xs text-slate-400">Auto scroll</span>
+                            <span>Dong log truc tiep - {selectedDevice === 'all' ? 'Tat ca thiet bi' : selectedDevice}</span>
+                            <span className="text-xs text-slate-400">Tu cuon</span>
                         </div>
                         <div ref={rawLogContainerRef} className="h-full max-h-[70vh] overflow-auto p-4">
                             {filteredLogs.length === 0 ? (
@@ -848,3 +1082,4 @@ function formatBadgeClass(format: string) {
             return 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-200'
     }
 }
+
