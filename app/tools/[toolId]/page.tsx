@@ -5,6 +5,7 @@ import { StringTools } from '@/components/tools/StringTools'
 import { PageJsonMerger } from '@/components/tools/JsonMerge'
 import { AndroidTools } from '@/components/tools/AndroidTools'
 import { AndroidLogcatFilter } from '@/components/tools/AndroidLogcatFilter'
+import { AndroidLogcatWebAdb } from '@/components/tools/AndroidLogcatWebAdb'
 import { notFound } from 'next/navigation'
 import OpenSSLPage from '@/components/tools/OpenSSLTools'
 import JsonFormatter from '@/components/tools/JsonFormatter'
@@ -15,6 +16,7 @@ const TOOL_COMPONENTS = {
   'json-merger': PageJsonMerger,
   'android-tools': AndroidTools,
   'android-logcat': AndroidLogcatFilter,
+  'android-logcat-webadb': AndroidLogcatWebAdb,
   'open-ssl-tools' : OpenSSLPage
 } as const
 
