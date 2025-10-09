@@ -19,6 +19,9 @@ type DeviceSummary = {
 type LogEvent = {
     id: string
     timestamp: string
+    threadTimestamp: string
+    localTimestamp: string
+    receivedAt: string
     device: string
     deviceName: string
     adSource: string
@@ -197,11 +200,11 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                         setDevices((prev) => {
                             if (!prev.length) {
                                 return [
-                                    { serial, name, lastSeen: event.timestamp, agentName: 'WebADB' }
+                                    { serial, name, lastSeen: event.receivedAt, agentName: 'WebADB' }
                                 ]
                             }
                             return prev.map((device) =>
-                                device.serial === serial ? { ...device, lastSeen: event.timestamp } : device
+                                device.serial === serial ? { ...device, lastSeen: event.receivedAt } : device
                             )
                         })
                     }
@@ -359,7 +362,8 @@ export const AndroidLogcatWebAdb: React.FC = () => {
         try {
             const rows = adEvents.map((event, index) => ({
                 '#': index + 1,
-                Timestamp: new Date(event.timestamp).toLocaleString(),
+                Timestamp: formatIsoAsLocal(event.receivedAt),
+                ThreadTime: event.threadTimestamp,
                 DeviceSerial: event.device,
                 DeviceName: event.deviceName,
                 AdSource: event.adSource,
@@ -553,7 +557,8 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                             <th className="w-48 px-4 py-2">Device</th>
                                             <th className="w-32 px-4 py-2">Ad Source</th>
                                             <th className="w-32 px-4 py-2">Format</th>
-                                            <th className="w-32 px-4 py-2">Timestamp</th>
+                                            <th className="w-40 px-4 py-2">Received At</th>
+                                            <th className="w-32 px-4 py-2">Thread Time</th>
                                             <th className="px-4 py-2">Raw Event</th>
                                         </tr>
                                     </thead>
@@ -585,7 +590,10 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                                     </span>
                                                 </td>
                                                 <td className="px-4 py-3 align-top text-xs text-slate-500 dark:text-slate-400">
-                                                    {formatTime(event.timestamp)}
+                                                    {formatReceivedTimestamp(event)}
+                                                </td>
+                                                <td className="px-4 py-3 align-top text-xs text-slate-500 dark:text-slate-400">
+                                                    {event.threadTimestamp}
                                                 </td>
                                                 <td className="px-4 py-3 align-top">
                                                     <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-600 dark:text-slate-300">
@@ -619,7 +627,10 @@ export const AndroidLogcatWebAdb: React.FC = () => {
                                             className="rounded border border-slate-800/60 bg-slate-900/60 p-3 text-slate-100"
                                         >
                                             <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
-                                                <span>{formatTime(event.timestamp)}</span>
+                                                <span>{formatReceivedTimestamp(event)}</span>
+                                                <span className="font-mono text-[10px] uppercase tracking-wide text-slate-500">
+                                                    {event.threadTimestamp}
+                                                </span>
                                                 <span className="font-mono text-slate-500">{event.device}</span>
                                                 {event.isAd && (
                                                     <span className="rounded-full bg-blue-200 px-2 py-0.5 text-[10px] font-semibold text-blue-700 dark:bg-blue-900/40 dark:text-blue-200">
@@ -645,6 +656,9 @@ function buildLogEvent(line: string, serial: string, deviceName: string, index: 
     return {
         id: `${serial}-${index}-${parsed.timestamp}`,
         timestamp: parsed.timestamp,
+        threadTimestamp: parsed.threadTimestamp,
+        localTimestamp: parsed.localTimestamp,
+        receivedAt: new Date().toISOString(),
         device: serial,
         deviceName,
         adSource: parsed.adSource ?? 'unknown',
@@ -657,6 +671,8 @@ function buildLogEvent(line: string, serial: string, deviceName: string, index: 
 
 function parseLogLine(line: string): {
     timestamp: string
+    threadTimestamp: string
+    localTimestamp: string
     metadata?: Record<string, unknown>
     adSource?: string | null
     adFormat?: string | null
@@ -668,12 +684,16 @@ function parseLogLine(line: string): {
 
     const now = new Date()
     let timestamp = now.toISOString()
+    let threadTimestamp = formatIsoAsThreadTime(timestamp)
+    let localTimestamp = formatIsoAsLocal(timestamp)
 
     if (match) {
         const month = Number.parseInt(match[1], 10)
         const day = Number.parseInt(match[2], 10)
         const time = match[3]
         timestamp = toIsoFromThreadTime(now, month, day, time)
+        threadTimestamp = `${match[1]}-${match[2]} ${time}`
+        localTimestamp = formatIsoAsLocal(timestamp)
     }
 
     const metadata = extractJsonPayload(line) ?? undefined
@@ -691,6 +711,8 @@ function parseLogLine(line: string): {
 
     return {
         timestamp,
+        threadTimestamp,
+        localTimestamp,
         metadata,
         adSource,
         adFormat,
@@ -774,6 +796,27 @@ function formatTime(iso: string) {
     return date.toLocaleTimeString([], { hour12: false })
 }
 
+function formatIsoAsThreadTime(iso: string) {
+    const date = new Date(iso)
+    if (Number.isNaN(date.getTime())) return '-'
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    const hours = String(date.getHours()).padStart(2, '0')
+    const minutes = String(date.getMinutes()).padStart(2, '0')
+    const seconds = String(date.getSeconds()).padStart(2, '0')
+    const milliseconds = String(date.getMilliseconds()).padStart(3, '0')
+    return `${month}-${day} ${hours}:${minutes}:${seconds}.${milliseconds}`
+}
+
+function formatIsoAsLocal(iso: string) {
+    const date = new Date(iso)
+    if (Number.isNaN(date.getTime())) return '-'
+    return date.toLocaleString([], { hour12: false })
+}
+
+function formatReceivedTimestamp(event: LogEvent) {
+    return formatIsoAsLocal(event.receivedAt)
+}
 function sourceBadgeClass(source: string) {
     switch (source.toLowerCase()) {
         case 'admob':
